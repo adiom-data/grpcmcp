@@ -36,6 +36,8 @@ A simple MCP server that will proxy to a grpc backend based on a provided descri
 
 * `bearer-env` string - Environment variable for token to attach in an `Authorization: Bearer` header. Overrides `bearer`.
 
+* `header` string (repeatable) - Headers to add in `Key: Value` format.
+
 ## Help
 
 Join our Discord at https://discord.gg/hDjx3DehwG

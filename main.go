@@ -29,7 +29,7 @@ import (
 var protojsonMarshaller = protojson.MarshalOptions{UseProtoNames: true}
 var protojsonUnmarshaller = protojson.UnmarshalOptions{DiscardUnknown: true}
 
-func toolHandler(c *connect.Client[dynamicpb.Message, dynamicpb.Message], desc protoreflect.MessageDescriptor, bearer string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func toolHandler(c *connect.Client[dynamicpb.Message, dynamicpb.Message], desc protoreflect.MessageDescriptor, headers http.Header) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		msg := dynamicpb.NewMessage(desc)
 		b, err := json.Marshal(request.Params.Arguments)
@@ -41,8 +41,17 @@ func toolHandler(c *connect.Client[dynamicpb.Message, dynamicpb.Message], desc p
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		req := connect.NewRequest(msg)
-		if bearer != "" {
-			req.Header().Set("Authorization", "Bearer "+bearer)
+		if len(headers) > 0 {
+			for k, v := range headers {
+				if len(v) == 1 {
+					req.Header().Set(k, v[0])
+				} else {
+					req.Header().Del(k)
+					for _, v2 := range v {
+						req.Header().Add(k, v2)
+					}
+				}
+			}
 		}
 		resp, err := c.CallUnary(ctx, req)
 		if err != nil {
@@ -90,7 +99,25 @@ func topSort(d *descriptorpb.FileDescriptorProto, all map[string]*descriptorpb.F
 	*ds = append(*ds, d)
 }
 
+type headerFlags http.Header
+
+func (s *headerFlags) String() string {
+	return fmt.Sprintf("%v", *s)
+}
+
+func (s *headerFlags) Set(value string) error {
+	k, v, ok := strings.Cut(value, ":")
+	if !ok {
+		return fmt.Errorf("err invalid header format: expecting `key: value`")
+	}
+	h := http.Header(*s)
+	h.Add(k, strings.TrimLeft(v, " "))
+	return nil
+}
+
 func main() {
+	headers := make(headerFlags)
+	flag.Var(&headers, "header", "Headers to add to the backend request (Header: Value). Can apply multiple times.")
 	serverName := flag.String("name", "gRPC MCP Server", "Name of MCP Server")
 	serverVersion := flag.String("version", "1.0.0", "Version of MCP Server")
 	sseHostPort := flag.String("hostport", "", "host:port for SSE server, STDIN if not set")
@@ -106,6 +133,10 @@ func main() {
 
 	if *bearerEnv != "" {
 		*bearer, _ = os.LookupEnv(*bearerEnv)
+	}
+
+	if *bearer != "" {
+		http.Header(headers).Set("Authorization", "Bearer "+*bearer)
 	}
 
 	servicesMap := map[string]struct{}{}
@@ -223,7 +254,7 @@ func main() {
 				c := connect.NewClient[dynamicpb.Message, dynamicpb.Message](httpClient, *baseURL+procedure, connect.WithSchema(m), connect.WithClientOptions(connectOpts...))
 
 				name := strings.ReplaceAll(fmt.Sprintf("%v__%v", s.FullName(), m.Name()), ".", "_")
-				srv.AddTool(mcp.NewToolWithRawSchema(name, description, rawJson), toolHandler(c, m.Input(), *bearer))
+				srv.AddTool(mcp.NewToolWithRawSchema(name, description, rawJson), toolHandler(c, m.Input(), http.Header(headers)))
 			}
 		}
 	}
