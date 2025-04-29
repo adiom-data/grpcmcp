@@ -172,7 +172,7 @@ func main() {
 	if *reflect {
 		all := map[string]*descriptorpb.FileDescriptorProto{}
 		client := grpcreflect.NewClient(httpClient, *baseURL, connectOpts...)
-		stream := client.NewStream(ctx)
+		stream := client.NewStream(ctx, grpcreflect.WithRequestHeaders(http.Header(headers)))
 		names, err := stream.ListServices()
 		if err != nil {
 			panic(err)
