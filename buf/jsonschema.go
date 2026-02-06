@@ -39,6 +39,12 @@ const (
 	jsString  = "string"
 )
 
+// maxSafeInteger is the maximum integer value that can be represented exactly
+// in a JSON number (IEEE 754 double-precision float). Values beyond this range
+// must be represented as strings. Many API providers (including Anthropic)
+// reject JSON Schema with integer bounds exceeding this value.
+const maxSafeInteger = 1<<53 - 1 // 9007199254740991
+
 type FieldVisibility int
 
 const (
@@ -352,6 +358,11 @@ func generateIntValidation[T int32 | int64](
 	}
 	minVal := -(1 << (bits - 1))
 	maxExclVal := uint64(1) << (bits - 1)
+	// Clamp to JSON-safe integer range for 64-bit types.
+	if bits > 52 {
+		minVal = -maxSafeInteger
+		maxExclVal = maxSafeInteger + 1
+	}
 	var orNumberSchema map[string]interface{}
 
 	generateConstInValidation(constraints, numberSchema)
@@ -438,7 +449,7 @@ func (p *jsonSchemaGenerator) generateInt64Validation(_ protoreflect.FieldDescri
 	switch {
 	default:
 		schema["anyOf"] = []map[string]interface{}{
-			{"type": jsInteger, "minimum": math.MinInt64, "exclusiveMaximum": math.Pow(2, 63)},
+			{"type": jsInteger, "minimum": -maxSafeInteger, "maximum": maxSafeInteger},
 			{"type": jsString, "pattern": "^-?[0-9]+$"},
 		}
 	case constraints.GetInt64() != nil:
@@ -460,6 +471,10 @@ func generateUintValidation[T uint32 | uint64](
 	}
 	var orNumberSchema map[string]interface{}
 	maxExclVal := float64(uint64(1)<<(bits-1)) * 2
+	// Clamp to JSON-safe integer range for 64-bit types.
+	if bits > 52 {
+		maxExclVal = maxSafeInteger + 1
+	}
 	generateConstInValidation(constraints, numberSchema)
 	switch {
 	case constraints.HasGt():
@@ -540,7 +555,7 @@ func (p *jsonSchemaGenerator) generateUint64Validation(_ protoreflect.FieldDescr
 	switch {
 	default:
 		schema["anyOf"] = []map[string]interface{}{
-			{"type": jsInteger, "minimum": 0, "exclusiveMaximum": float64(uint64(1)<<63) * 2},
+			{"type": jsInteger, "minimum": 0, "maximum": maxSafeInteger},
 			{"type": jsString, "pattern": "^[0-9]+$"},
 		}
 	case constraints.GetUint64() != nil:
