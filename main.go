@@ -13,7 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpcreflect"
-	"github.com/adiom-data/grpcmcp/buf"
+	"github.com/Basic-Capital/grpcmcp/buf"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"golang.org/x/net/http2"

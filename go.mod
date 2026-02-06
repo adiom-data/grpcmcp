@@ -1,4 +1,4 @@
-module github.com/adiom-data/grpcmcp
+module github.com/Basic-Capital/grpcmcp
 
 go 1.23.0
 
