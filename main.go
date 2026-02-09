@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -18,6 +19,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -115,6 +117,50 @@ func (s *headerFlags) Set(value string) error {
 	return nil
 }
 
+func hasMethodOption(m protoreflect.MethodDescriptor, fieldNum uint32, expectedValue uint64) bool {
+	opts := m.Options()
+	if opts == nil {
+		return false
+	}
+	b, err := proto.Marshal(opts)
+	if err != nil {
+		return false
+	}
+	for len(b) > 0 {
+		num, wtype, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return false
+		}
+		b = b[n:]
+		if uint32(num) == fieldNum && wtype == protowire.VarintType {
+			v, vn := protowire.ConsumeVarint(b)
+			if vn < 0 {
+				return false
+			}
+			return v == expectedValue
+		}
+		switch wtype {
+		case protowire.VarintType:
+			_, n = protowire.ConsumeVarint(b)
+		case protowire.Fixed32Type:
+			_, n = protowire.ConsumeFixed32(b)
+		case protowire.Fixed64Type:
+			_, n = protowire.ConsumeFixed64(b)
+		case protowire.BytesType:
+			_, n = protowire.ConsumeBytes(b)
+		case protowire.StartGroupType:
+			_, n = protowire.ConsumeGroup(protowire.Number(num), b)
+		default:
+			return false
+		}
+		if n < 0 {
+			return false
+		}
+		b = b[n:]
+	}
+	return false
+}
+
 func main() {
 	headers := make(headerFlags)
 	flag.Var(&headers, "header", "Headers to add to the backend request (Header: Value). Can apply multiple times.")
@@ -128,8 +174,31 @@ func main() {
 	bearerEnv := flag.String("bearer-env", "", "Environment variable for token to use in an Authorization bearer header")
 	baseURL := flag.String("url", "http://localhost:8090", "The url of the backend")
 	useConnect := flag.Bool("connect", false, "Use connect protocol (instead of gRPC)")
+	requireMethodOption := flag.String("require-method-option", "", "Only expose methods with this option (fieldNumber:value, e.g. 50003:1)")
 
 	flag.Parse()
+
+	var optFieldNum uint32
+	var optValue uint64
+	if *requireMethodOption != "" {
+		parts := strings.SplitN(*requireMethodOption, ":", 2)
+		if len(parts) != 2 {
+			fmt.Fprint(os.Stderr, "require-method-option must be in the format fieldNumber:value\n")
+			os.Exit(-1)
+		}
+		fn, err := strconv.ParseUint(parts[0], 10, 32)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid field number in require-method-option: %v\n", err)
+			os.Exit(-1)
+		}
+		val, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid value in require-method-option: %v\n", err)
+			os.Exit(-1)
+		}
+		optFieldNum = uint32(fn)
+		optValue = val
+	}
 
 	if *bearerEnv != "" {
 		*bearer, _ = os.LookupEnv(*bearerEnv)
@@ -230,6 +299,9 @@ func main() {
 				m := methods.Get(j)
 				if m.IsStreamingClient() || m.IsStreamingServer() {
 					// Currently don't support streaming
+					continue
+				}
+				if optFieldNum > 0 && !hasMethodOption(m, optFieldNum, optValue) {
 					continue
 				}
 				input := buf.Generate(m.Input())
