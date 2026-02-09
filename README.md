@@ -38,6 +38,8 @@ A simple MCP server that will proxy to a grpc backend based on a provided descri
 
 * `header` string (repeatable) - Headers to add in `Key: Value` format.
 
+* `require-method-option` string - Only expose methods where a specific proto method option matches a given value. Format: `fieldNumber:value` (e.g. `50003:1`). This filters gRPC methods by checking the raw proto extension field on the method descriptor, so no generated code for the option is needed.
+
 ## Help
 
 Join our Discord at https://discord.gg/hDjx3DehwG
