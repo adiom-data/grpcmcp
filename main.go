@@ -117,6 +117,27 @@ func (s *headerFlags) Set(value string) error {
 	return nil
 }
 
+func generateToolName(shortNames bool, hasCollision bool, fullServiceName string, simpleServiceName string, methodName string) string {
+	if shortNames && !hasCollision {
+		return fmt.Sprintf("%v__%v", simpleServiceName, methodName)
+	}
+	return strings.ReplaceAll(fmt.Sprintf("%v__%v", fullServiceName, methodName), ".", "_")
+}
+
+func buildRegistry(fds *descriptorpb.FileDescriptorSet) *protoregistry.Files {
+	reg := new(protoregistry.Files)
+	for _, f := range fds.GetFile() {
+		fd, err := protodesc.NewFile(f, reg)
+		if err != nil {
+			continue
+		}
+		if _, err := reg.FindFileByPath(fd.Path()); err != nil {
+			reg.RegisterFile(fd)
+		}
+	}
+	return reg
+}
+
 func hasMethodOption(m protoreflect.MethodDescriptor, fieldNum uint32, expectedValue uint64) bool {
 	opts := m.Options()
 	if opts == nil {
@@ -175,6 +196,7 @@ func main() {
 	baseURL := flag.String("url", "http://localhost:8090", "The url of the backend")
 	useConnect := flag.Bool("connect", false, "Use connect protocol (instead of gRPC)")
 	requireMethodOption := flag.String("require-method-option", "", "Only expose methods with this option (fieldNumber:value, e.g. 50003:1)")
+	shortNames := flag.Bool("short-names", false, "Use short tool names (ServiceName__MethodName instead of full package path). Saves tokens when used with LLM agents that list all tool names in context.")
 
 	flag.Parse()
 
@@ -277,15 +299,27 @@ func main() {
 		}
 	}
 
-	reg := new(protoregistry.Files)
-	for _, f := range fds.GetFile() {
-		desc, err := protodesc.NewFile(f, reg)
-		if err != nil {
-			panic(err)
-		}
-		if _, err := reg.FindFileByPath(desc.Path()); err != nil {
-			reg.RegisterFile(desc)
-		}
+	// Pre-scan for duplicate simple service names so --short-names can fall back
+	// to the full name for any services that would collide.
+	simpleNameCount := map[string]int{}
+	if *shortNames {
+		scanReg := buildRegistry(&fds)
+		scanReg.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+			for i := range fd.Services().Len() {
+				s := fd.Services().Get(i)
+				if len(servicesMap) > 0 {
+					if _, found := servicesMap[string(s.FullName())]; !found {
+						continue
+					}
+				}
+				simpleNameCount[string(s.Name())]++
+			}
+			return true
+		})
+	}
+
+	reg := buildRegistry(&fds)
+	reg.RangeFiles(func(desc protoreflect.FileDescriptor) bool {
 		services := desc.Services()
 		for i := range services.Len() {
 			s := services.Get(i)
@@ -325,11 +359,13 @@ func main() {
 				description := strings.Join(descriptions, " | ")
 				c := connect.NewClient[dynamicpb.Message, dynamicpb.Message](httpClient, *baseURL+procedure, connect.WithSchema(m), connect.WithClientOptions(connectOpts...))
 
-				name := strings.ReplaceAll(fmt.Sprintf("%v__%v", s.FullName(), m.Name()), ".", "_")
+				hasCollision := simpleNameCount[string(s.Name())] > 1
+				name := generateToolName(*shortNames, hasCollision, string(s.FullName()), string(s.Name()), string(m.Name()))
 				srv.AddTool(mcp.NewToolWithRawSchema(name, description, rawJson), toolHandler(c, m.Input(), http.Header(headers)))
 			}
 		}
-	}
+		return true
+	})
 
 	if *sseHostPort == "" {
 		if err := server.ServeStdio(srv); err != nil {
