@@ -14,6 +14,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	jsonschemav6 "github.com/santhosh-tekuri/jsonschema/v6"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 )
@@ -67,6 +68,50 @@ func TestStreamableHTTPTransportListsAndCallsReflectedTools(t *testing.T) {
 	}
 
 	assertHealthCheckToolCall(t, client)
+}
+
+func TestStreamableHTTPToolInputSchemasCompileAndValidate(t *testing.T) {
+	backendURL := startReflectingHealthBackend(t)
+	srv := buildReflectedTestServer(t, backendURL)
+	httpSrv := mcpserver.NewTestStreamableHTTPServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	trans, err := transport.NewStreamableHTTP(httpSrv.URL + "/mcp")
+	if err != nil {
+		t.Fatalf("NewStreamableHTTP failed: %v", err)
+	}
+	client := mcpclient.NewClient(trans)
+	startAndInitializeClient(t, client)
+
+	tools, err := client.ListTools(t.Context(), mcp.ListToolsRequest{})
+	if err != nil {
+		t.Fatalf("ListTools failed: %v", err)
+	}
+	if len(tools.Tools) == 0 {
+		t.Fatal("expected at least one tool")
+	}
+
+	var healthCheckSchema *jsonschemav6.Schema
+	for _, tool := range tools.Tools {
+		schema := compileToolInputSchema(t, tool)
+		if tool.Name == healthCheckTool {
+			healthCheckSchema = schema
+		}
+	}
+	if healthCheckSchema == nil {
+		t.Fatalf("expected tools list to include %q, got %+v", healthCheckTool, tools.Tools)
+	}
+
+	assertSchemaValid(t, healthCheckSchema, map[string]any{
+		"service": grpchealth.HealthV1ServiceName,
+	})
+	assertSchemaValid(t, healthCheckSchema, map[string]any{})
+	assertSchemaInvalid(t, healthCheckSchema, map[string]any{
+		"service": 123,
+	})
+	assertSchemaInvalid(t, healthCheckSchema, map[string]any{
+		"unknown": "value",
+	})
 }
 
 func TestLegacySSETransportListsAndCallsReflectedTools(t *testing.T) {
@@ -125,6 +170,54 @@ func assertHealthCheckToolCall(t *testing.T, client *mcpclient.Client) {
 	}
 	if response.Status != "SERVING" {
 		t.Fatalf("expected SERVING status, got %q in %s", response.Status, text)
+	}
+}
+
+func compileToolInputSchema(t *testing.T, tool mcp.Tool) *jsonschemav6.Schema {
+	t.Helper()
+
+	data, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatalf("marshal tool %q failed: %v", tool.Name, err)
+	}
+	var rawTool map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawTool); err != nil {
+		t.Fatalf("unmarshal tool %q failed: %v", tool.Name, err)
+	}
+	rawSchema, ok := rawTool["inputSchema"]
+	if !ok {
+		t.Fatalf("tool %q did not include inputSchema: %s", tool.Name, data)
+	}
+	var schemaDoc any
+	if err := json.Unmarshal(rawSchema, &schemaDoc); err != nil {
+		t.Fatalf("tool %q inputSchema is not JSON: %v; schema=%s", tool.Name, err, rawSchema)
+	}
+
+	compiler := jsonschemav6.NewCompiler()
+	schemaURL := tool.Name + ".schema.json"
+	if err := compiler.AddResource(schemaURL, schemaDoc); err != nil {
+		t.Fatalf("add inputSchema for tool %q failed: %v; schema=%s", tool.Name, err, rawSchema)
+	}
+	schema, err := compiler.Compile(schemaURL)
+	if err != nil {
+		t.Fatalf("compile inputSchema for tool %q failed: %v; schema=%s", tool.Name, err, rawSchema)
+	}
+	return schema
+}
+
+func assertSchemaValid(t *testing.T, schema *jsonschemav6.Schema, value any) {
+	t.Helper()
+
+	if err := schema.Validate(value); err != nil {
+		t.Fatalf("expected schema to accept %#v: %v", value, err)
+	}
+}
+
+func assertSchemaInvalid(t *testing.T, schema *jsonschemav6.Schema, value any) {
+	t.Helper()
+
+	if err := schema.Validate(value); err == nil {
+		t.Fatalf("expected schema to reject %#v", value)
 	}
 }
 

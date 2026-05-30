@@ -42,6 +42,12 @@ A simple MCP server that will proxy to a grpc backend based on a provided descri
 
 * `header` string (repeatable) - Headers to add in `Key: Value` format.
 
+* `string64` - If set, expose 64-bit protobuf integer fields (`int64`,
+  `uint64`, `sint64`, `fixed64`, `sfixed64`) as strings only in MCP JSON
+  schemas. This avoids precision ambiguity for JavaScript-based clients and
+  agents. By default, schemas continue to allow either JSON numbers or strings
+  for compatibility.
+
 ## Help
 
 Join our Discord at https://discord.gg/hDjx3DehwG

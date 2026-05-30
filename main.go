@@ -124,6 +124,7 @@ type grpcMCPConfig struct {
 	Services    string
 	BaseURL     string
 	UseConnect  bool
+	String64    bool
 }
 
 func buildMCPServer(ctx context.Context, cfg grpcMCPConfig) (*server.MCPServer, error) {
@@ -216,7 +217,11 @@ func buildMCPServer(ctx context.Context, cfg grpcMCPConfig) (*server.MCPServer, 
 					// Currently don't support streaming
 					continue
 				}
-				input := buf.Generate(m.Input())
+				var schemaOpts []buf.GeneratorOption
+				if cfg.String64 {
+					schemaOpts = append(schemaOpts, buf.WithStringOnly64BitIntegers())
+				}
+				input := buf.Generate(m.Input(), schemaOpts...)
 				j, err := json.Marshal(input)
 				if err != nil {
 					return nil, err
@@ -260,6 +265,7 @@ func main() {
 	bearerEnv := flag.String("bearer-env", "", "Environment variable for token to use in an Authorization bearer header")
 	baseURL := flag.String("url", "http://localhost:8090", "The url of the backend")
 	useConnect := flag.Bool("connect", false, "Use connect protocol (instead of gRPC)")
+	string64 := flag.Bool("string64", false, "Expose 64-bit protobuf integer fields as strings only in JSON schemas")
 
 	flag.Parse()
 
@@ -282,6 +288,7 @@ func main() {
 		Services:    *services,
 		BaseURL:     *baseURL,
 		UseConnect:  *useConnect,
+		String64:    *string64,
 	})
 	if err != nil {
 		if *descriptors == "" && !*reflect {
