@@ -8,9 +8,11 @@ A simple MCP server that will proxy to a grpc backend based on a provided descri
 
 2. In a terminal, run the example grpc server `go run example/main.go`. This will start a grpc health service on port 8090 with server reflection enabled. Note that this runs on the default port that grpcmcp will connect to.
 
-3. **SSE Transport** In another terminal, run `grpcmcp --hostport=localhost:3000 --reflect`. Specifying `hostport` will use SSE. The SSE endpoint will be served at `http://localhost:3000/sse`.
+3. **Streamable HTTP Transport** In another terminal, run `grpcmcp --hostport=localhost:3000 --reflect`. Specifying `hostport` will use Streamable HTTP by default. The MCP endpoint will be served at `http://localhost:3000/mcp`.
 
-3. **STDIN Transport** Set up the MCP config. e.g.
+4. **Legacy SSE Transport** For older clients, run `grpcmcp --hostport=localhost:3000 --transport=sse --reflect`. The SSE endpoint will be served at `http://localhost:3000/sse`.
+
+5. **STDIN Transport** Set up the MCP config. e.g.
 ```
 "grpcmcp": {
     "command": "grpcmcp",
@@ -22,7 +24,9 @@ A simple MCP server that will proxy to a grpc backend based on a provided descri
 
 `grpcmcp --help` for a full list of options.
 
-* `hostport` string - When set, use SSE, and this serves as the server host:port.
+* `hostport` string - When set, serve MCP over HTTP, and use this as the server host:port.
+
+* `transport` string - Transport to use when `hostport` is set. Defaults to `http` for Streamable HTTP at `/mcp`. Set to `sse` for the legacy SSE transport at `/sse`.
 
 * `descriptors` string - Specify file location of the protobuf definitions generated from `buf build -o protos.pb` or `protoc --descriptor_set_out=protos.pb` instead of using gRPC reflection.
 

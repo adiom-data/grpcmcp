@@ -1,8 +1,6 @@
 module github.com/adiom-data/grpcmcp
 
-go 1.23.0
-
-toolchain go1.23.4
+go 1.25.5
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.6-20250307204501-0409229c3780.1
@@ -10,13 +8,16 @@ require (
 	connectrpc.com/grpchealth v1.3.0
 	connectrpc.com/grpcreflect v1.3.0
 	github.com/bufbuild/protovalidate-go v0.9.2
-	github.com/mark3labs/mcp-go v0.18.0
+	github.com/mark3labs/mcp-go v0.54.1
 	golang.org/x/net v0.39.0
 	google.golang.org/protobuf v1.36.6
 )
 
 require (
+	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/text v0.24.0 // indirect
 )

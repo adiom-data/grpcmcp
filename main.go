@@ -115,72 +115,56 @@ func (s *headerFlags) Set(value string) error {
 	return nil
 }
 
-func main() {
-	headers := make(headerFlags)
-	flag.Var(&headers, "header", "Headers to add to the backend request (Header: Value). Can apply multiple times.")
-	serverName := flag.String("name", "gRPC MCP Server", "Name of MCP Server")
-	serverVersion := flag.String("version", "1.0.0", "Version of MCP Server")
-	sseHostPort := flag.String("hostport", "", "host:port for SSE server, STDIN if not set")
-	descriptors := flag.String("descriptors", "", "Location of the descriptor")
-	reflect := flag.Bool("reflect", false, "Use reflection to get descriptors")
-	services := flag.String("services", "", "If set, a comma separated list of services to expose")
-	bearer := flag.String("bearer", "", "Token to use in an Authorization bearer header")
-	bearerEnv := flag.String("bearer-env", "", "Environment variable for token to use in an Authorization bearer header")
-	baseURL := flag.String("url", "http://localhost:8090", "The url of the backend")
-	useConnect := flag.Bool("connect", false, "Use connect protocol (instead of gRPC)")
+type grpcMCPConfig struct {
+	Headers     http.Header
+	ServerName  string
+	Version     string
+	Descriptors string
+	Reflect     bool
+	Services    string
+	BaseURL     string
+	UseConnect  bool
+}
 
-	flag.Parse()
-
-	if *bearerEnv != "" {
-		*bearer, _ = os.LookupEnv(*bearerEnv)
-	}
-
-	if *bearer != "" {
-		http.Header(headers).Set("Authorization", "Bearer "+*bearer)
+func buildMCPServer(ctx context.Context, cfg grpcMCPConfig) (*server.MCPServer, error) {
+	if cfg.Descriptors == "" && !cfg.Reflect {
+		return nil, fmt.Errorf("descriptors or reflect is required")
 	}
 
 	servicesMap := map[string]struct{}{}
-	if len(*services) > 0 {
-		servicesSplit := strings.Split(*services, ",")
+	if len(cfg.Services) > 0 {
+		servicesSplit := strings.Split(cfg.Services, ",")
 		for _, s := range servicesSplit {
 			servicesMap[s] = struct{}{}
 		}
 	}
 
-	ctx := context.Background()
-
-	if *descriptors == "" && !*reflect {
-		fmt.Fprint(os.Stderr, "descriptors or reflect is required.\n")
-		flag.Usage()
-		os.Exit(-1)
-	}
-
 	httpClient := http.DefaultClient
-	if strings.HasPrefix(*baseURL, "http://") {
+	if strings.HasPrefix(cfg.BaseURL, "http://") {
 		httpClient = insecureClient()
 	}
 	var connectOpts []connect.ClientOption
 	connectOpts = append(connectOpts, responseInitializer)
-	if !*useConnect {
+	if !cfg.UseConnect {
 		connectOpts = append(connectOpts, connect.WithGRPC())
 	}
 
-	srv := server.NewMCPServer(*serverName, *serverVersion)
+	srv := server.NewMCPServer(cfg.ServerName, cfg.Version)
 
 	var fds descriptorpb.FileDescriptorSet
 
-	if *reflect {
+	if cfg.Reflect {
 		all := map[string]*descriptorpb.FileDescriptorProto{}
-		client := grpcreflect.NewClient(httpClient, *baseURL, connectOpts...)
-		stream := client.NewStream(ctx, grpcreflect.WithRequestHeaders(http.Header(headers)))
+		client := grpcreflect.NewClient(httpClient, cfg.BaseURL, connectOpts...)
+		stream := client.NewStream(ctx, grpcreflect.WithRequestHeaders(cfg.Headers))
 		names, err := stream.ListServices()
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		for _, name := range names {
 			fileDescriptors, err := stream.FileContainingSymbol(name)
 			if err != nil {
-				panic(err)
+				return nil, err
 			}
 			for _, d := range fileDescriptors {
 				all[d.GetName()] = d
@@ -188,7 +172,7 @@ func main() {
 		}
 		_, err = stream.Close()
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		var ds []*descriptorpb.FileDescriptorProto
 		seen := map[string]struct{}{}
@@ -198,13 +182,13 @@ func main() {
 		fds.File = ds
 	}
 
-	if *descriptors != "" {
-		b, err := os.ReadFile(*descriptors)
+	if cfg.Descriptors != "" {
+		b, err := os.ReadFile(cfg.Descriptors)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		if err := proto.Unmarshal(b, &fds); err != nil {
-			panic(err)
+			return nil, err
 		}
 	}
 
@@ -212,7 +196,7 @@ func main() {
 	for _, f := range fds.GetFile() {
 		desc, err := protodesc.NewFile(f, reg)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		if _, err := reg.FindFileByPath(desc.Path()); err != nil {
 			reg.RegisterFile(desc)
@@ -235,11 +219,11 @@ func main() {
 				input := buf.Generate(m.Input())
 				j, err := json.Marshal(input)
 				if err != nil {
-					panic(err)
+					return nil, err
 				}
 				var rawJson json.RawMessage
 				if err := rawJson.UnmarshalJSON(j); err != nil {
-					panic(err)
+					return nil, err
 				}
 				src := desc.SourceLocations().ByDescriptor(m)
 				var descriptions []string
@@ -251,12 +235,61 @@ func main() {
 				}
 				procedure := fmt.Sprintf("/%v/%v", s.FullName(), m.Name())
 				description := strings.Join(descriptions, " | ")
-				c := connect.NewClient[dynamicpb.Message, dynamicpb.Message](httpClient, *baseURL+procedure, connect.WithSchema(m), connect.WithClientOptions(connectOpts...))
+				c := connect.NewClient[dynamicpb.Message, dynamicpb.Message](httpClient, cfg.BaseURL+procedure, connect.WithSchema(m), connect.WithClientOptions(connectOpts...))
 
 				name := strings.ReplaceAll(fmt.Sprintf("%v__%v", s.FullName(), m.Name()), ".", "_")
-				srv.AddTool(mcp.NewToolWithRawSchema(name, description, rawJson), toolHandler(c, m.Input(), http.Header(headers)))
+				srv.AddTool(mcp.NewToolWithRawSchema(name, description, rawJson), toolHandler(c, m.Input(), cfg.Headers))
 			}
 		}
+	}
+
+	return srv, nil
+}
+
+func main() {
+	headers := make(headerFlags)
+	flag.Var(&headers, "header", "Headers to add to the backend request (Header: Value). Can apply multiple times.")
+	serverName := flag.String("name", "gRPC MCP Server", "Name of MCP Server")
+	serverVersion := flag.String("version", "1.0.0", "Version of MCP Server")
+	sseHostPort := flag.String("hostport", "", "host:port for HTTP server, STDIN if not set")
+	transport := flag.String("transport", "http", "Transport to use when hostport is set: http or sse")
+	descriptors := flag.String("descriptors", "", "Location of the descriptor")
+	reflect := flag.Bool("reflect", false, "Use reflection to get descriptors")
+	services := flag.String("services", "", "If set, a comma separated list of services to expose")
+	bearer := flag.String("bearer", "", "Token to use in an Authorization bearer header")
+	bearerEnv := flag.String("bearer-env", "", "Environment variable for token to use in an Authorization bearer header")
+	baseURL := flag.String("url", "http://localhost:8090", "The url of the backend")
+	useConnect := flag.Bool("connect", false, "Use connect protocol (instead of gRPC)")
+
+	flag.Parse()
+
+	if *bearerEnv != "" {
+		*bearer, _ = os.LookupEnv(*bearerEnv)
+	}
+
+	if *bearer != "" {
+		http.Header(headers).Set("Authorization", "Bearer "+*bearer)
+	}
+
+	ctx := context.Background()
+
+	srv, err := buildMCPServer(ctx, grpcMCPConfig{
+		Headers:     http.Header(headers),
+		ServerName:  *serverName,
+		Version:     *serverVersion,
+		Descriptors: *descriptors,
+		Reflect:     *reflect,
+		Services:    *services,
+		BaseURL:     *baseURL,
+		UseConnect:  *useConnect,
+	})
+	if err != nil {
+		if *descriptors == "" && !*reflect {
+			fmt.Fprint(os.Stderr, "descriptors or reflect is required.\n")
+			flag.Usage()
+		}
+		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+		os.Exit(-1)
 	}
 
 	if *sseHostPort == "" {
@@ -264,8 +297,18 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		}
 	} else {
-		sseSrv := server.NewSSEServer(srv)
-		if err := sseSrv.Start(*sseHostPort); err != nil {
+		var err error
+		switch *transport {
+		case "http", "streamable-http":
+			httpSrv := server.NewStreamableHTTPServer(srv)
+			err = httpSrv.Start(*sseHostPort)
+		case "sse":
+			sseSrv := server.NewSSEServer(srv)
+			err = sseSrv.Start(*sseHostPort)
+		default:
+			err = fmt.Errorf("unknown transport %q: expected http, streamable-http, or sse", *transport)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		}
 	}
