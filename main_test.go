@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"connectrpc.com/grpchealth"
 	"connectrpc.com/grpcreflect"
+	"github.com/adiom-data/grpcmcp/grpcmcp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -17,6 +21,9 @@ import (
 	jsonschemav6 "github.com/santhosh-tekuri/jsonschema/v6"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 const healthCheckTool = "grpc_health_v1_Health__Check"
@@ -41,6 +48,48 @@ func TestReflectedUnaryToolCallsBackend(t *testing.T) {
 	client := startInProcessClient(t, srv)
 
 	assertHealthCheckToolCall(t, client)
+}
+
+func TestLoadDescriptorsFromFileBuildsServer(t *testing.T) {
+	backendURL := startReflectingHealthBackend(t)
+	descriptors := loadReflectedDescriptors(t, backendURL)
+	data, err := proto.Marshal(descriptors)
+	if err != nil {
+		t.Fatalf("marshal descriptors failed: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "descriptors.pb")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write descriptors failed: %v", err)
+	}
+
+	loaded, err := grpcmcp.LoadDescriptorsFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadDescriptorsFromFile failed: %v", err)
+	}
+	srv := buildTestServerFromDescriptors(t, backendURL, loaded, []protoreflect.FullName{protoreflect.FullName(grpchealth.HealthV1ServiceName)})
+	client := startInProcessClient(t, srv)
+
+	assertHealthCheckToolCall(t, client)
+}
+
+func TestLoadDescriptorsPrefersDescriptorFileWhenReflectionAlsoSet(t *testing.T) {
+	backendURL := startReflectingHealthBackend(t)
+	data, err := proto.Marshal(&descriptorpb.FileDescriptorSet{})
+	if err != nil {
+		t.Fatalf("marshal descriptors failed: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "descriptors.pb")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write descriptors failed: %v", err)
+	}
+
+	loaded, err := loadDescriptors(t.Context(), path, true, backendURL, nil, false)
+	if err != nil {
+		t.Fatalf("loadDescriptors failed: %v", err)
+	}
+	if got := len(loaded.GetFile()); got != 0 {
+		t.Fatalf("loaded %d descriptor files, want descriptor file to override reflection", got)
+	}
 }
 
 func TestStreamableHTTPTransportListsAndCallsReflectedTools(t *testing.T) {
@@ -140,6 +189,44 @@ func TestLegacySSETransportListsAndCallsReflectedTools(t *testing.T) {
 	assertHealthCheckToolCall(t, client)
 }
 
+func TestDynamicHeaderProviderReceivesInboundToolRequestHeaders(t *testing.T) {
+	const token = "Bearer caller-token"
+
+	backendURL := startReflectingHealthBackendWithAuth(t, token)
+	descriptors, err := grpcmcp.LoadDescriptorsFromReflection(t.Context(), backendURL, nil, false)
+	if err != nil {
+		t.Fatalf("LoadDescriptorsFromReflection failed: %v", err)
+	}
+	srv, err := grpcmcp.NewServer(grpcmcp.Config{
+		Headers: func(ctx context.Context, req mcp.CallToolRequest) (http.Header, error) {
+			headers := make(http.Header)
+			headers.Set("Authorization", req.Header.Get("Authorization"))
+			return headers, nil
+		},
+		ServerName:  "test grpc mcp",
+		Version:     "test",
+		Descriptors: descriptors,
+		Services:    []protoreflect.FullName{protoreflect.FullName(grpchealth.HealthV1ServiceName)},
+		BaseURL:     backendURL,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	httpSrv := mcpserver.NewTestStreamableHTTPServer(srv)
+	t.Cleanup(httpSrv.Close)
+
+	trans, err := transport.NewStreamableHTTP(httpSrv.URL+"/mcp", transport.WithHTTPHeaders(map[string]string{
+		"Authorization": token,
+	}))
+	if err != nil {
+		t.Fatalf("NewStreamableHTTP failed: %v", err)
+	}
+	client := mcpclient.NewClient(trans)
+	startAndInitializeClient(t, client)
+
+	assertHealthCheckToolCall(t, client)
+}
+
 func assertHealthCheckToolCall(t *testing.T, client *mcpclient.Client) {
 	t.Helper()
 
@@ -223,16 +310,20 @@ func assertSchemaInvalid(t *testing.T, schema *jsonschemav6.Schema, value any) {
 
 func TestServiceFilterLimitsReflectedTools(t *testing.T) {
 	backendURL := startReflectingHealthBackend(t)
-	srv, err := buildMCPServer(t.Context(), grpcMCPConfig{
-		Headers:    http.Header{},
-		ServerName: "test grpc mcp",
-		Version:    "test",
-		Reflect:    true,
-		Services:   "missing.Service",
-		BaseURL:    backendURL,
+	descriptors, err := grpcmcp.LoadDescriptorsFromReflection(t.Context(), backendURL, nil, false)
+	if err != nil {
+		t.Fatalf("LoadDescriptorsFromReflection failed: %v", err)
+	}
+	srv, err := grpcmcp.NewServer(grpcmcp.Config{
+		Headers:     grpcmcp.StaticHeaders(nil),
+		ServerName:  "test grpc mcp",
+		Version:     "test",
+		Descriptors: descriptors,
+		Services:    []protoreflect.FullName{"missing.Service"},
+		BaseURL:     backendURL,
 	})
 	if err != nil {
-		t.Fatalf("buildMCPServer failed: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 	if tools := srv.ListTools(); len(tools) != 0 {
 		t.Fatalf("expected service filter to hide all tools, got %v", toolNames(tools))
@@ -256,19 +347,59 @@ func startReflectingHealthBackend(t *testing.T) string {
 	return srv.URL
 }
 
+func startReflectingHealthBackendWithAuth(t *testing.T, wantAuthorization string) string {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	health := grpchealth.NewStaticChecker(grpchealth.HealthV1ServiceName)
+	reflector := grpcreflect.NewStaticReflector(grpchealth.HealthV1ServiceName)
+	path, handler := grpchealth.NewHandler(health)
+	mux.Handle(path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != wantAuthorization {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	mux.Handle(grpcreflect.NewHandlerV1(reflector))
+	mux.Handle(grpcreflect.NewHandlerV1Alpha(reflector))
+
+	srv := httptest.NewUnstartedServer(h2c.NewHandler(mux, &http2.Server{}))
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 func buildReflectedTestServer(t *testing.T, backendURL string) *mcpserver.MCPServer {
 	t.Helper()
 
-	srv, err := buildMCPServer(t.Context(), grpcMCPConfig{
-		Headers:    http.Header{},
-		ServerName: "test grpc mcp",
-		Version:    "test",
-		Reflect:    true,
-		Services:   grpchealth.HealthV1ServiceName,
-		BaseURL:    backendURL,
+	descriptors := loadReflectedDescriptors(t, backendURL)
+	return buildTestServerFromDescriptors(t, backendURL, descriptors, []protoreflect.FullName{protoreflect.FullName(grpchealth.HealthV1ServiceName)})
+}
+
+func loadReflectedDescriptors(t *testing.T, backendURL string) *descriptorpb.FileDescriptorSet {
+	t.Helper()
+
+	descriptors, err := grpcmcp.LoadDescriptorsFromReflection(t.Context(), backendURL, nil, false)
+	if err != nil {
+		t.Fatalf("LoadDescriptorsFromReflection failed: %v", err)
+	}
+	return descriptors
+}
+
+func buildTestServerFromDescriptors(t *testing.T, backendURL string, descriptors *descriptorpb.FileDescriptorSet, services []protoreflect.FullName) *mcpserver.MCPServer {
+	t.Helper()
+
+	srv, err := grpcmcp.NewServer(grpcmcp.Config{
+		Headers:     grpcmcp.StaticHeaders(nil),
+		ServerName:  "test grpc mcp",
+		Version:     "test",
+		Descriptors: descriptors,
+		Services:    services,
+		BaseURL:     backendURL,
 	})
 	if err != nil {
-		t.Fatalf("buildMCPServer failed: %v", err)
+		t.Fatalf("NewServer failed: %v", err)
 	}
 	return srv
 }

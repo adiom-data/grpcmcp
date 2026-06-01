@@ -42,11 +42,49 @@ A simple MCP server that will proxy to a grpc backend based on a provided descri
 
 * `header` string (repeatable) - Headers to add in `Key: Value` format.
 
-* `string64` - If set, expose 64-bit protobuf integer fields (`int64`,
-  `uint64`, `sint64`, `fixed64`, `sfixed64`) as strings only in MCP JSON
-  schemas. This avoids precision ambiguity for JavaScript-based clients and
-  agents. By default, schemas continue to allow either JSON numbers or strings
-  for compatibility.
+* `string64` - If set, expose 64-bit protobuf integer fields (`int64`, `uint64`, `sint64`, `fixed64`, `sfixed64`) as strings only in MCP JSON schemas. This avoids precision ambiguity for JavaScript-based clients and agents. By default, schemas continue to allow either JSON numbers or strings for compatibility.
+
+grpcmcp currently exposes unary gRPC methods as MCP tools. Backend gRPC client-streaming, server-streaming, and bidi-streaming methods are skipped. This is separate from MCP transports: Streamable HTTP and legacy SSE are supported for client connections to grpcmcp.
+
+## Library Usage
+
+grpcmcp can also be embedded as a Go library. The library accepts a descriptor set directly, so applications can decide how to load descriptors and how to wrap the MCP HTTP handler.
+
+```go
+descriptors, err := grpcmcp.LoadDescriptorsFromReflection(ctx, backendURL, headers, false)
+if err != nil {
+    return err
+}
+
+srv, err := grpcmcp.NewServer(grpcmcp.Config{
+    ServerName:  "gRPC MCP Server",
+    Version:     "1.0.0",
+    BaseURL:     backendURL,
+    Descriptors: descriptors,
+    Headers:     grpcmcp.StaticHeaders(headers),
+})
+if err != nil {
+    return err
+}
+
+handler := server.NewStreamableHTTPServer(srv)
+```
+
+For dynamic backend auth, provide a `ToolHeaderProvider`. The full `mcp.CallToolRequest` is available, including inbound HTTP headers supplied by supported MCP transports.
+
+```go
+srv, err := grpcmcp.NewServer(grpcmcp.Config{
+    BaseURL:     backendURL,
+    Descriptors: descriptors,
+    Headers: func(ctx context.Context, req mcp.CallToolRequest) (http.Header, error) {
+        h := make(http.Header)
+        h.Set("Authorization", req.Header.Get("Authorization"))
+        return h, nil
+    },
+})
+```
+
+Inbound MCP authentication should be handled by wrapping the HTTP handler with standard Go middleware. Outbound backend authentication is controlled by the configured header provider.
 
 ## Help
 
