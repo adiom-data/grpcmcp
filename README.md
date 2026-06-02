@@ -70,6 +70,22 @@ if err != nil {
 handler := server.NewStreamableHTTPServer(srv)
 ```
 
+To route backend calls through a custom transport, provide `HTTPClient`. For example, an embedded application can use an in-memory HTTP transport such as `go.akshayshah.org/memhttp` by passing the in-memory server's URL and client:
+
+```go
+backend, err := memhttp.New(backendHandler)
+if err != nil {
+    return err
+}
+defer backend.Close()
+
+srv, err := grpcmcp.NewServer(grpcmcp.Config{
+    BaseURL:     backend.URL(),
+    HTTPClient:  backend.Client(),
+    Descriptors: descriptors,
+})
+```
+
 For dynamic backend auth, provide a `ToolHeaderProvider`. The full `mcp.CallToolRequest` is available, including inbound HTTP headers supplied by supported MCP transports.
 
 ```go

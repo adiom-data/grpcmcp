@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/grpchealth"
@@ -227,6 +228,31 @@ func TestDynamicHeaderProviderReceivesInboundToolRequestHeaders(t *testing.T) {
 	assertHealthCheckToolCall(t, client)
 }
 
+func TestNewServerUsesConfiguredHTTPClient(t *testing.T) {
+	backendURL := startReflectingHealthBackend(t)
+	descriptors := loadReflectedDescriptors(t, backendURL)
+	recordingClient := &recordingHTTPClient{client: http.DefaultClient}
+	srv, err := grpcmcp.NewServer(grpcmcp.Config{
+		Headers:     grpcmcp.StaticHeaders(nil),
+		ServerName:  "test grpc mcp",
+		Version:     "test",
+		Descriptors: descriptors,
+		Services:    []protoreflect.FullName{protoreflect.FullName(grpchealth.HealthV1ServiceName)},
+		BaseURL:     backendURL,
+		HTTPClient:  recordingClient,
+		UseConnect:  true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	client := startInProcessClient(t, srv)
+
+	assertHealthCheckToolCall(t, client)
+	if got := recordingClient.calls.Load(); got == 0 {
+		t.Fatal("expected configured HTTP client to be used")
+	}
+}
+
 func assertHealthCheckToolCall(t *testing.T, client *mcpclient.Client) {
 	t.Helper()
 
@@ -258,6 +284,16 @@ func assertHealthCheckToolCall(t *testing.T, client *mcpclient.Client) {
 	if response.Status != "SERVING" {
 		t.Fatalf("expected SERVING status, got %q in %s", response.Status, text)
 	}
+}
+
+type recordingHTTPClient struct {
+	client *http.Client
+	calls  atomic.Int64
+}
+
+func (c *recordingHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.calls.Add(1)
+	return c.client.Do(req)
 }
 
 func compileToolInputSchema(t *testing.T, tool mcp.Tool) *jsonschemav6.Schema {

@@ -36,6 +36,7 @@ type Config struct {
 	ServerName  string
 	Version     string
 	BaseURL     string
+	HTTPClient  connect.HTTPClient
 	UseConnect  bool
 	Descriptors *descriptorpb.FileDescriptorSet
 	Services    []protoreflect.FullName
@@ -125,10 +126,7 @@ func NewServer(cfg Config) (*server.MCPServer, error) {
 		servicesMap[service] = struct{}{}
 	}
 
-	httpClient := http.DefaultClient
-	if strings.HasPrefix(cfg.BaseURL, "http://") {
-		httpClient = insecureClient()
-	}
+	httpClient := backendHTTPClient(cfg.BaseURL, cfg.HTTPClient)
 	connectOpts := connectOptions(cfg.UseConnect)
 
 	srv := server.NewMCPServer(cfg.ServerName, cfg.Version)
@@ -244,6 +242,16 @@ func insecureClient() *http.Client {
 			},
 		},
 	}
+}
+
+func backendHTTPClient(baseURL string, configured connect.HTTPClient) connect.HTTPClient {
+	if configured != nil {
+		return configured
+	}
+	if strings.HasPrefix(baseURL, "http://") {
+		return insecureClient()
+	}
+	return http.DefaultClient
 }
 
 var responseInitializer = connect.WithResponseInitializer(func(spec connect.Spec, message any) error {
