@@ -183,12 +183,32 @@ func NewServer(cfg Config) (*server.MCPServer, error) {
 				c := connect.NewClient[dynamicpb.Message, dynamicpb.Message](httpClient, cfg.BaseURL+procedure, connect.WithSchema(m), connect.WithClientOptions(connectOpts...))
 
 				name := strings.ReplaceAll(fmt.Sprintf("%v__%v", s.FullName(), m.Name()), ".", "_")
-				srv.AddTool(mcp.NewToolWithRawSchema(name, description, rawJSON), toolHandler(c, m.Input(), cfg.Headers))
+				tool := mcp.NewToolWithRawSchema(name, description, rawJSON)
+				applyIdempotencyAnnotations(&tool, m)
+				srv.AddTool(tool, toolHandler(c, m.Input(), cfg.Headers))
 			}
 		}
 	}
 
 	return srv, nil
+}
+
+// applyIdempotencyAnnotations maps the method's proto idempotency_level onto MCP tool
+// annotations so clients can gate on them (e.g. expose only read-only tools):
+// NO_SIDE_EFFECTS methods are read-only (and therefore idempotent); IDEMPOTENT methods
+// may write but can be retried safely. Methods without a declared level get no hints.
+func applyIdempotencyAnnotations(tool *mcp.Tool, m protoreflect.MethodDescriptor) {
+	opts, ok := m.Options().(*descriptorpb.MethodOptions)
+	if !ok || opts == nil {
+		return
+	}
+	switch opts.GetIdempotencyLevel() {
+	case descriptorpb.MethodOptions_NO_SIDE_EFFECTS:
+		tool.Annotations.ReadOnlyHint = mcp.ToBoolPtr(true)
+		tool.Annotations.IdempotentHint = mcp.ToBoolPtr(true)
+	case descriptorpb.MethodOptions_IDEMPOTENT:
+		tool.Annotations.IdempotentHint = mcp.ToBoolPtr(true)
+	}
 }
 
 func toolHandler(c *connect.Client[dynamicpb.Message, dynamicpb.Message], desc protoreflect.MessageDescriptor, headers ToolHeaderProvider) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {

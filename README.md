@@ -46,6 +46,8 @@ A simple MCP server that will proxy to a grpc backend based on a provided descri
 
 grpcmcp currently exposes unary gRPC methods as MCP tools. Backend gRPC client-streaming, server-streaming, and bidi-streaming methods are skipped. This is separate from MCP transports: Streamable HTTP and legacy SSE are supported for client connections to grpcmcp.
 
+Methods declaring a proto `idempotency_level` are surfaced with matching MCP tool annotations, so clients can gate on them (e.g. expose only read-only tools): `option idempotency_level = NO_SIDE_EFFECTS;` sets `readOnlyHint: true` (and `idempotentHint: true`), and `IDEMPOTENT` sets `idempotentHint: true`. Methods without a declared level get no hints.
+
 ## Library Usage
 
 grpcmcp can also be embedded as a Go library. The library accepts a descriptor set directly, so applications can decide how to load descriptors and how to wrap the MCP HTTP handler.
