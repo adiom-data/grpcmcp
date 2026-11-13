@@ -19,6 +19,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/mark3labs/mcp-go/server/servertest"
 	jsonschemav6 "github.com/santhosh-tekuri/jsonschema/v6"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -96,7 +97,7 @@ func TestLoadDescriptorsPrefersDescriptorFileWhenReflectionAlsoSet(t *testing.T)
 func TestStreamableHTTPTransportListsAndCallsReflectedTools(t *testing.T) {
 	backendURL := startReflectingHealthBackend(t)
 	srv := buildReflectedTestServer(t, backendURL)
-	httpSrv := mcpserver.NewTestStreamableHTTPServer(srv)
+	httpSrv := servertest.NewTestStreamableHTTPServer(srv)
 	t.Cleanup(httpSrv.Close)
 
 	trans, err := transport.NewStreamableHTTP(httpSrv.URL + "/mcp")
@@ -123,7 +124,7 @@ func TestStreamableHTTPTransportListsAndCallsReflectedTools(t *testing.T) {
 func TestStreamableHTTPToolInputSchemasCompileAndValidate(t *testing.T) {
 	backendURL := startReflectingHealthBackend(t)
 	srv := buildReflectedTestServer(t, backendURL)
-	httpSrv := mcpserver.NewTestStreamableHTTPServer(srv)
+	httpSrv := servertest.NewTestStreamableHTTPServer(srv)
 	t.Cleanup(httpSrv.Close)
 
 	trans, err := transport.NewStreamableHTTP(httpSrv.URL + "/mcp")
@@ -167,7 +168,7 @@ func TestStreamableHTTPToolInputSchemasCompileAndValidate(t *testing.T) {
 func TestLegacySSETransportListsAndCallsReflectedTools(t *testing.T) {
 	backendURL := startReflectingHealthBackend(t)
 	srv := buildReflectedTestServer(t, backendURL)
-	sseSrv := mcpserver.NewTestServer(srv)
+	sseSrv := servertest.NewTestServer(srv)
 	t.Cleanup(sseSrv.Close)
 
 	client, err := mcpclient.NewSSEMCPClient(sseSrv.URL + "/sse")
@@ -213,7 +214,7 @@ func TestDynamicHeaderProviderReceivesInboundToolRequestHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
-	httpSrv := mcpserver.NewTestStreamableHTTPServer(srv)
+	httpSrv := servertest.NewTestStreamableHTTPServer(srv)
 	t.Cleanup(httpSrv.Close)
 
 	trans, err := transport.NewStreamableHTTP(httpSrv.URL+"/mcp", transport.WithHTTPHeaders(map[string]string{
